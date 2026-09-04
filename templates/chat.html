@@ -1,0 +1,9 @@
+<!doctype html><html><head><title>ChatApp</title><link rel="stylesheet" href="/static/style.css"></head><body><div class="app"><aside><h2>ChatApp</h2><p>Logged in as <b>{{username}}</b> · <a href="/logout">Logout</a></p><hr><h3>Users</h3><div id="users">{% for u in users %}<button class="user" data-id="{{u['_id']}}" data-name="{{u['username']}}">{{u["username"]}}</button>{% endfor %}</div></aside><main><header id="header">Select a user</header><div id="messages"></div><form id="form"><input id="text" placeholder="Type a message..." disabled><button id="send" disabled>Send</button></form></main></div><script>
+const me="{{session['user_id']}}"; let selected=null;
+const box=document.getElementById("messages"), input=document.getElementById("text"), send=document.getElementById("send");
+function esc(s){return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
+async function load(){if(!selected)return;let r=await fetch("/api/messages/"+selected),a=await r.json();box.innerHTML=a.map(m=>'<div class="msg '+(m.sender===me?'mine':'')+'">'+esc(m.text)+' <small>'+m.time+'</small></div>').join("");box.scrollTop=box.scrollHeight;}
+document.querySelectorAll(".user").forEach(b=>b.onclick=()=>{selected=b.dataset.id;document.getElementById("header").textContent="Chat with "+b.dataset.name;input.disabled=send.disabled=false;input.focus();load();});
+document.getElementById("form").onsubmit=async e=>{e.preventDefault();if(!selected||!input.value.trim())return;await fetch("/api/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:input.value,receiver:selected})});input.value="";load();};
+setInterval(load,2000);
+</script></body></html>
