@@ -7,12 +7,12 @@ from flask import (
     session,
     jsonify
 )
-from pymongo import MongoClient
+from pymongo import MongoClient, ASCENDING
 from werkzeug.security import generate_password_hash, check_password_hash
 from bson.objectid import ObjectId
+from bson.errors import InvalidId
 from datetime import datetime
 import os
-
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
@@ -21,9 +21,24 @@ client = MongoClient(
     os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
 )
 db = client["chatapp"]
-
 users = db["users"]
 messages = db["messages"]
+
+# Indexes: unique usernames, and fast lookup of a conversation sorted by time
+users.create_index("username", unique=True)
+messages.create_index(
+    [("sender", ASCENDING), ("receiver", ASCENDING), ("created_at", ASCENDING)]
+)
+
+MAX_MESSAGE_LENGTH = 1000
+
+
+def to_object_id(value):
+    """Return an ObjectId, or None if the value is not a valid id."""
+    try:
+        return ObjectId(value)
+    except (InvalidId, TypeError):
+        return None
 
 
 @app.route("/")
@@ -36,8 +51,8 @@ def register():
     error = None
 
     if request.method == "POST":
-        username = request.form["username"].strip()
-        password = request.form["password"]
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
 
         if not username or not password:
             error = "Username and password are required."
@@ -60,12 +75,12 @@ def login():
 
     if request.method == "POST":
         user = users.find_one({
-            "username": request.form["username"].strip()
+            "username": request.form.get("username", "").strip()
         })
 
         if user and check_password_hash(
             user["password"],
-            request.form["password"]
+            request.form.get("password", "")
         ):
             session["user_id"] = str(user["_id"])
             session["username"] = user["username"]
@@ -88,6 +103,7 @@ def chat():
         return redirect(url_for("login"))
 
     me = ObjectId(session["user_id"])
+
     user_list = list(
         users.find(
             {"_id": {"$ne": me}},
@@ -107,8 +123,11 @@ def get_messages(user_id):
     if "user_id" not in session:
         return jsonify(error="Unauthorized"), 401
 
+    other = to_object_id(user_id)
+    if other is None:
+        return jsonify(error="Invalid user id"), 400
+
     me = ObjectId(session["user_id"])
-    other = ObjectId(user_id)
 
     cur = messages.find({
         "$or": [
@@ -132,18 +151,26 @@ def send_message():
     if "user_id" not in session:
         return jsonify(error="Unauthorized"), 401
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
-    receiver = data.get("receiver")
+    receiver = to_object_id(data.get("receiver"))
 
-    if not text or not receiver:
+    if not text or receiver is None:
         return jsonify(
-            error="Message and receiver are required"
+            error="A message and a valid receiver are required"
         ), 400
+
+    if len(text) > MAX_MESSAGE_LENGTH:
+        return jsonify(
+            error=f"Message must be under {MAX_MESSAGE_LENGTH} characters"
+        ), 400
+
+    if not users.find_one({"_id": receiver}, {"_id": 1}):
+        return jsonify(error="Receiver not found"), 404
 
     messages.insert_one({
         "sender": ObjectId(session["user_id"]),
-        "receiver": ObjectId(receiver),
+        "receiver": receiver,
         "text": text,
         "created_at": datetime.utcnow()
     })
@@ -152,4 +179,5 @@ def send_message():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Debug mode only when explicitly enabled (never in production)
+    app.run(debug=os.environ.get("FLASK_DEBUG") == "1")
